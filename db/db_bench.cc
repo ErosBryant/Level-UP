@@ -68,6 +68,7 @@ static int FLAGS_reads = -1;
 // Number of concurrent threads to run.
 static int FLAGS_threads = 1;
 
+static int FLAGS_zipfian_write = 0;
 // Size of each value
 static int FLAGS_value_size = 100;
 
@@ -727,7 +728,7 @@ class Benchmark {
       snprintf(msg, sizeof(msg), "(%d ops)", num_);
       thread->stats.AddMessage(msg);
     }
-
+     int k=0;
     RandomGenerator gen;
     WriteBatch batch;
     Status s;
@@ -735,7 +736,17 @@ class Benchmark {
     for (int i = 0; i < num_; i += entries_per_batch_) {
       batch.Clear();
       for (int j = 0; j < entries_per_batch_; j++) {
-        const int k = seq ? i + j : (thread->rand.Next() % FLAGS_num);
+              if (FLAGS_zipfian_write==1)
+        {  
+          k =  thread->rand.Zipfian(FLAGS_num, 1);
+          // output_file << k << std::endl;
+          // k = thread->rand.GenerateKey();
+          // output_file << k << std::endl;
+        
+        }else{
+          k = seq ? i + j : (thread->rand.Next() % FLAGS_num);
+          // output_file << k << std::endl;
+          }
         char key[100];
         snprintf(key, sizeof(key), "%016d", k);
         //batch.Put(key, gen.Generate(value_size_));
@@ -777,25 +788,30 @@ class Benchmark {
     delete iter;
     thread->stats.AddBytes(bytes);
   }
-
   void ReadRandom(ThreadState* thread) {
     ReadOptions options;
     std::string value;
+    int k=0;
     int found = 0;
     for (int i = 0; i < reads_; i++) {
       char key[100];
-      const int k = thread->rand.Next() % FLAGS_num;
+      if (FLAGS_zipfian_write==1)
+        { 
+          k =  thread->rand.Zipfian(FLAGS_num, 1);
+          // k = thread->rand.GenerateKey();
+
+        }else{k = thread->rand.Next() % FLAGS_num;}
       snprintf(key, sizeof(key), "%016d", k);
       if (db_->Get(options, key, &value).ok()) {
         found++;
       }
       thread->stats.FinishedSingleOp();
     }
+
     char msg[100];
     snprintf(msg, sizeof(msg), "(%d of %d found)", found, num_);
     thread->stats.AddMessage(msg);
   }
-
   void ReadMissing(ThreadState* thread) {
     ReadOptions options;
     std::string value;
@@ -976,7 +992,9 @@ int main(int argc, char** argv) {
       adgMod::MOD = n;
     } else if (strncmp(argv[i], "--db=", 5) == 0) {
         FLAGS_db = argv[i] + 5;
-    } else {
+    } else if (sscanf(argv[i], "--zip=%d%c", &n, &junk) == 1) {
+        FLAGS_zipfian_write = n;
+    }else {
       fprintf(stderr, "Invalid flag '%s'\n", argv[i]);
       exit(1);
     }
