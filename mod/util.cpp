@@ -19,6 +19,9 @@ namespace adgMod {
     int block_restart_interval = 16;
     uint32_t test_num_level_segments = 100;
     uint32_t test_num_file_segments = 100;
+    extern uint64_t level_bypass=0;
+    uint64_t level_0_empty_count = 0;
+    uint64_t level_empty_count = 0;
     int key_size;
     int value_size;
     leveldb::Env* env;

@@ -165,6 +165,9 @@ private:
   Status FinishCompactionOutputFile(CompactionState* compact, Iterator* input);
   Status InstallCompactionResults(CompactionState* compact)
       EXCLUSIVE_LOCKS_REQUIRED(mutex_);
+  Status InstallCompactionResults1(CompactionState* compact,CompactionState* compact1)
+      EXCLUSIVE_LOCKS_REQUIRED(mutex_);
+
 
   const Comparator* user_comparator() const {
     return internal_comparator_.user_comparator();

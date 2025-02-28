@@ -1045,28 +1045,32 @@ Status DBImpl::InstallCompactionResults(CompactionState* compact) {
   return versions_->LogAndApply(compact->compaction->edit(), &mutex_);
 }
 
+
 Status DBImpl::DoCompactionWork(CompactionState* compact) {
   const uint64_t start_micros = env_->NowMicros();
-  int64_t imm_micros = 0;  // Micros spent doing imm_ compactions
+  int64_t imm_micros = 0;  
+
 
   Log(options_.info_log, "Compacting %d@%d + %d@%d files",
-      compact->compaction->num_input_files(0), compact->compaction->level(),
+      compact->compaction->num_input_files(0),
+      compact->compaction->level(),
       compact->compaction->num_input_files(1),
       compact->compaction->level() + 1);
 
   assert(versions_->NumLevelFiles(compact->compaction->level()) > 0);
+  // compaction 시작 시 builder와 outfile는 반드시 nullptr이어야 함.
   assert(compact->builder == nullptr);
   assert(compact->outfile == nullptr);
+
   if (snapshots_.empty()) {
     compact->smallest_snapshot = versions_->LastSequence();
   } else {
     compact->smallest_snapshot = snapshots_.oldest()->sequence_number();
   }
 
-  // Release mutex while we're actually doing the compaction work
-  mutex_.Unlock();
-
   Iterator* input = versions_->MakeInputIterator(compact->compaction);
+  // compaction 작업 동안 mutex 해제
+  mutex_.Unlock();
   input->SeekToFirst();
   Status status;
   ParsedInternalKey ikey;
@@ -1074,9 +1078,22 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
   bool has_current_user_key = false;
   SequenceNumber last_sequence_for_key = kMaxSequenceNumber;
 
-//  vector<string> keys;
 
-  for (; input->Valid() && !shutting_down_.load(std::memory_order_acquire);) {
+    CompactionState* compact_sstable1 = new CompactionState(compact->compaction);  // duplicate 组，写入 level n
+    CompactionState* compact_sstable2 = new CompactionState(compact->compaction);  // unique 组，写入 level n+1
+
+    std::string prev_user_key;   // 上一条记录的 user key
+    bool have_pending = false;   // 当前组是否有待 flush 的记录
+    bool duplicate = false;      // 当前组是否重复
+    std::string pending_key_str; // 待 flush 的完整 internal key 字符串
+    std::string pending_value;   // 对应的 value
+
+
+  // -------------------------------------------------------------------
+  // 분기 1: Level 0 compaction (기존 방식 그대로)
+  // printf("compact->compaction->level(): %d\n", compact->compaction->level());
+  if (compact->compaction->level() < 1) {
+    while (input->Valid() && !shutting_down_.load(std::memory_order_acquire)) {
     // Prioritize immutable compaction work
     if (has_imm_.load(std::memory_order_relaxed)) {
       const uint64_t imm_start = env_->NowMicros();
@@ -1091,10 +1108,6 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
     }
 
     Slice key = input->key();
-//    ParsedInternalKey parsed;
-//    ParseInternalKey(key, &parsed);
-//    keys.push_back(parsed.user_key);
-
     if (compact->compaction->ShouldStopBefore(key) &&
         compact->builder != nullptr) {
       status = FinishCompactionOutputFile(compact, input);
@@ -1196,6 +1209,7 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
   }
   for (size_t i = 0; i < compact->outputs.size(); i++) {
     stats.bytes_written += compact->outputs[i].file_size;
+    // printf("output file size count: %d\n", compact->outputs.size());
   }
 
   mutex_.Lock();
@@ -1207,8 +1221,189 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
   if (!status.ok()) {
     RecordBackgroundError(status);
   }
+  // -------------------------------------------------------------------
+  // 분기 2: Level 1 이상 compaction → duplicate promotion 적용
+   // ... Level 1 이상 duplicate promotion 분기 내부 ...
+  }else {
+
+std::string current_user_key;    // 현재 그룹의 user key
+bool has_current_user_key = false;  // 후보(record)가 있는지 여부
+std::string candidate_key, candidate_value;  // 현재 그룹의 첫 번째(최신) 레코드
+bool is_duplicate = false;  // 현재 그룹 내에 duplicate가 발생했는지
+
+while (input->Valid() && !shutting_down_.load(std::memory_order_acquire)) {
+  Slice key = input->key();
+  ParsedInternalKey ikey;
+  if (!ParseInternalKey(key, &ikey)) {
+    // 파싱 실패 시 건너뜁니다.
+    input->Next();
+    continue;
+  }
+
+  // 새로운 user key가 등장하면(즉, 그룹이 바뀌면)
+  if (!has_current_user_key ||
+      user_comparator()->Compare(ikey.user_key, Slice(current_user_key)) != 0) {
+    // 이전 그룹의 후보(record)가 있다면 flush 합니다.
+    if (has_current_user_key) {
+      if (is_duplicate) {
+        // 중복 발생: 첫 레코드를 하위 레벨(sstable1)에 기록
+        if (compact_sstable1->builder == nullptr) {
+          status = OpenCompactionOutputFile(compact_sstable1);
+          if (!status.ok()) break;
+        }
+        if (compact_sstable1->builder->NumEntries() == 0)
+          compact_sstable1->current_output()->smallest.DecodeFrom(candidate_key);
+        compact_sstable1->current_output()->largest.DecodeFrom(candidate_key);
+        compact_sstable1->builder->Add(candidate_key, candidate_value);
+      } else {
+        // 유일한 key: 상위 레벨(sstable2)에 기록
+        if (compact_sstable2->builder == nullptr) {
+          status = OpenCompactionOutputFile(compact_sstable2);
+          if (!status.ok()) break;
+        }
+        if (compact_sstable2->builder->NumEntries() == 0)
+          compact_sstable2->current_output()->smallest.DecodeFrom(candidate_key);
+        compact_sstable2->current_output()->largest.DecodeFrom(candidate_key);
+        compact_sstable2->builder->Add(candidate_key, candidate_value);
+        if (compact_sstable2->builder->FileSize() >= compact->compaction->MaxOutputFileSize()) {
+          status = FinishCompactionOutputFile(compact_sstable2, input);
+          if (!status.ok()) break;
+        }
+      }
+    }
+    // 새 그룹의 첫 레코드를 후보로 저장
+    candidate_key.assign(key.data(), key.size());
+    candidate_value = input->value().ToString();
+    current_user_key.assign(ikey.user_key.data(), ikey.user_key.size());
+    is_duplicate = false;         // 새 그룹에서는 duplicate 초기화
+    has_current_user_key = true;
+  } else {
+    // 동일 그룹 내의 duplicate가 발생한 경우
+    is_duplicate = true;
+    // 후보는 최초(최신) 레코드이므로 업데이트 x
+  }
+  input->Next();
+}
+
+// 루프 종료 후, 마지막 후보 flush
+if (has_current_user_key) {
+  if (is_duplicate) {
+    if (compact_sstable1->builder == nullptr) {
+      status = OpenCompactionOutputFile(compact_sstable1);
+    }
+    if (status.ok()) {
+      if (compact_sstable1->builder->NumEntries() == 0)
+        compact_sstable1->current_output()->smallest.DecodeFrom(candidate_key);
+      compact_sstable1->current_output()->largest.DecodeFrom(candidate_key);
+      compact_sstable1->builder->Add(candidate_key, candidate_value);
+    }
+  } else {
+    if (compact_sstable2->builder == nullptr) {
+      status = OpenCompactionOutputFile(compact_sstable2);
+    }
+    if (status.ok()) {
+      if (compact_sstable2->builder->NumEntries() == 0)
+        compact_sstable2->current_output()->smallest.DecodeFrom(candidate_key);
+      compact_sstable2->current_output()->largest.DecodeFrom(candidate_key);
+      compact_sstable2->builder->Add(candidate_key, candidate_value);
+      if (compact_sstable2->builder->FileSize() >= compact->compaction->MaxOutputFileSize()) {
+        status = FinishCompactionOutputFile(compact_sstable2, input);
+      }
+    }
+  }
+}
+
+// 남은 빌더 flush
+if (status.ok() && compact_sstable1->builder != nullptr) {
+  status = FinishCompactionOutputFile(compact_sstable1, input);
+}
+if (status.ok() && compact_sstable2->builder != nullptr) {
+  status = FinishCompactionOutputFile(compact_sstable2, input);
+}
+
+
+
+    // 통계 계산: 만약 duplicate promotion 결과의 출력은 compact_sstable1/2에 기록되었다면,
+    // 이 부분도 필요에 따라 두 상태의 출력을 합산하도록 수정
+CompactionStats stats1, stats2;
+stats1.micros = stats2.micros = env_->NowMicros() - start_micros - imm_micros;
+for (int which = 0; which < 2; which++) {
+  for (int i = 0; i < compact->compaction->num_input_files(which); i++) {
+    size_t size = compact->compaction->input(which, i)->file_size;
+    stats1.bytes_read += size;
+    stats2.bytes_read += size;
+  }
+}
+
+
+for (const auto& output : compact_sstable1->outputs) {
+  stats1.bytes_written += output.file_size;
+}
+for (const auto& output : compact_sstable2->outputs) {
+  stats2.bytes_written += output.file_size;
+}
+
+
+    mutex_.Lock();
+    stats_[compact_sstable1->compaction->level()].Add(stats1);
+    stats_[compact_sstable2->compaction->level() + 1].Add(stats2);
+
+    // 먼저, VersionEdit 적용: duplicate와 unique 결과를 모두 반영한 상태로 설치
+    if (status.ok()) {
+      status = InstallCompactionResults1(compact_sstable1, compact_sstable2);
+      // printf("InstallCompactionResults1\n");
+      if (!status.ok()) {
+        printf("InstallCompactionResults1 failed\n");
+      }
+    }
+  
+
+    delete compact_sstable1;
+    delete compact_sstable2;
+    delete input;
+    input = nullptr;
+
+    if (!status.ok())
+      RecordBackgroundError(status);
+  } 
+
+
   VersionSet::LevelSummaryStorage tmp;
   Log(options_.info_log, "compacted to: %s", versions_->LevelSummary(&tmp));
+  return status;
+}
+
+
+Status DBImpl::InstallCompactionResults1(CompactionState* compact_sstable1,
+                                           CompactionState* compact_sstable2) {
+  mutex_.AssertHeld();
+
+  // 使用 compact_sstable1 的 compaction 关联的 VersionEdit 对象
+  VersionEdit* edit = compact_sstable1->compaction->edit();
+  if (edit == nullptr) {
+    printf("compact_sstable1->compaction->edit() was nullptr; new VersionEdit created\n");
+  }
+
+  // 1. 添加 compaction 输入文件的删除操作
+  compact_sstable1->compaction->AddInputDeletions(edit);
+  const int level = compact_sstable1->compaction->level();
+
+  // 2. duplicate处理：将 compact_sstable1 的输出文件（重复组）添加到当前级(level)
+  for (size_t i = 0; i < compact_sstable1->outputs.size(); i++) {
+    const CompactionState::Output& out = compact_sstable1->outputs[i];
+    edit->AddFile(level, out.number, out.file_size, out.smallest, out.largest);
+  }
+
+  // 3. unique处理：将 compact_sstable2 的输出文件添加到上一级(level+1)
+  for (size_t i = 0; i < compact_sstable2->outputs.size(); i++) {
+    const CompactionState::Output& out = compact_sstable2->outputs[i];
+    // edit2->AddFile(level + 1, out.number, out.file_size, out.smallest, out.largest);
+    edit->AddFile(level+1, out.number, out.file_size, out.smallest, out.largest);
+  }
+
+  // 将 VersionEdit 日志写入并应用到当前版本中（只调用一次）
+  Status status = versions_->LogAndApply(edit, &mutex_);
+
   return status;
 }
 
@@ -1642,6 +1837,9 @@ bool DBImpl::GetProperty(const Slice& property, std::string* value) {
         value->append(buf);
       }
     }
+     adgMod::learn_cb_model->Report();
+
+    //
     return true;
   } else if (in == "sstables") {
     *value = versions_->current()->DebugString();

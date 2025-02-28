@@ -44,6 +44,9 @@ namespace adgMod {
     extern int block_restart_interval;
     extern uint32_t test_num_level_segments;
     extern uint32_t test_num_file_segments;
+    extern uint64_t level_bypass;
+    extern uint64_t level_0_empty_count;
+    extern uint64_t level_empty_count;
 
     // some variables and pointers made global
     extern int key_size;

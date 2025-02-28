@@ -372,6 +372,7 @@ namespace leveldb {
             // Step FindFile
             instance->StartTimer(0);
             if (level == 0) {
+                adgMod::level_0_empty_count++;
                 // Level-0 files may overlap each other.  Find all files that
                 // overlap user_key and process them in order from newest to oldest.
 
@@ -387,6 +388,7 @@ namespace leveldb {
                 }
                 if (tmp.empty()) {
                     instance->PauseTimer(0);
+        
                     continue;
                 }
 
