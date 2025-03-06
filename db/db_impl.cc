@@ -1996,6 +1996,18 @@ bool DBImpl::GetProperty(const Slice& property, std::string* value) {
     }
     adgMod::learn_cb_model->Report();
 
+    std::map<int, uint64_t> latest_values;  // 각 level의 최종 count 저장
+
+    for (const auto& pair : adgMod::level_bypass) {
+        latest_values[pair.first] = pair.second;  // 최신 값으로 업데이트
+    }
+
+    // 최종 값 출력
+    std::cout << "Level bypass count:" << std::endl;
+    for (const auto& entry : latest_values) {
+        std::cout << "Level: " << entry.first << ", Value: " << entry.second << std::endl;
+    }
+  
     //
     return true;
   } else if (in == "sstables") {

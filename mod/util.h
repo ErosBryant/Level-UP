@@ -16,6 +16,7 @@
 #include "event.h"
 #include "CBMode_Learn.h"
 #include <x86intrin.h>
+#include <unordered_map>
 
 
 using std::string;
@@ -44,10 +45,12 @@ namespace adgMod {
     extern int block_restart_interval;
     extern uint32_t test_num_level_segments;
     extern uint32_t test_num_file_segments;
-    extern uint64_t level_bypass;
+    extern std::vector<std::pair<int, uint64_t>> level_bypass;
+    extern std::unordered_map<int, uint64_t> level_fail_count;
     extern uint64_t level_0_empty_count;
     extern uint64_t level_empty_count;
-
+    extern uint64_t level_0_compare_count;
+    extern uint64_t mem_count;
     // some variables and pointers made global
     extern int key_size;
     extern int value_size;

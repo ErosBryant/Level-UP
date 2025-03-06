@@ -388,7 +388,7 @@ namespace leveldb {
                 }
                 if (tmp.empty()) {
                     instance->PauseTimer(0);
-        
+                    adgMod::level_bypass.emplace_back(0, adgMod::level_0_empty_count);
                     continue;
                 }
 
@@ -430,6 +430,7 @@ namespace leveldb {
                         if (index >= num_files) {
                             files = nullptr;
                             num_files = 0;
+                            
                         } else {
                             tmp2 = files[index];
                             if (ucmp->Compare(user_key, tmp2->smallest.user_key()) < 0) {
@@ -447,6 +448,7 @@ namespace leveldb {
                     // Binary search to find earliest index whose largest key >= ikey.
                     uint32_t index = FindFile(vset_->icmp_, files_[level], ikey);
                     if (index >= num_files) {
+                        adgMod::level_fail_count[level]++;
                         files = nullptr;
                         num_files = 0;
                     } else {
@@ -455,6 +457,7 @@ namespace leveldb {
                             // All of "tmp2" is past any data for user_key
                             files = nullptr;
                             num_files = 0;
+                            adgMod::level_fail_count[level]++;
                         } else {
                             files = &tmp2;
                             num_files = 1;

@@ -6,6 +6,8 @@
 #include "util.h"
 #include "learned_index.h"
 #include <x86intrin.h>
+#include <unordered_map>
+#include <iostream>
 
 using std::to_string;
 
@@ -19,9 +21,13 @@ namespace adgMod {
     int block_restart_interval = 16;
     uint32_t test_num_level_segments = 100;
     uint32_t test_num_file_segments = 100;
-    extern uint64_t level_bypass=0;
+    std::vector<std::pair<int, uint64_t>> level_bypass;  // 실제 정의
+    std::unordered_map<int, uint64_t> level_fail_count;  // 실제 정의
     uint64_t level_0_empty_count = 0;
+    uint64_t level_0_compare_count = 0;
     uint64_t level_empty_count = 0;
+    uint64_t mem_count=0;
+
     int key_size;
     int value_size;
     leveldb::Env* env;
